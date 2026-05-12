@@ -57,11 +57,12 @@ export default function App() {
   const [stimCount, setStimCount] = useState(0);
   const [stats, setStats] = useState({ vcn: 0, latency: 0 });
   const [points, setPoints] = useState<number[]>([]);
-  const [emgBuffer, setEmgBuffer] = useState<number[]>([]);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const emgBufferRef = useRef<number[]>([]);
   const frameCountRef = useRef(0);
   const animationRef = useRef<number>(0);
+  const artifactRef = useRef(0);
 
   // Memoized Pathology Params
   const pathologyParams = useMemo((): PathologyParams => {
@@ -114,40 +115,41 @@ export default function App() {
 
   // Handle Stimulus
   const handleTrigger = () => {
-    if (mode !== 'vcn') return;
-    
     setStimCount(prev => Math.min(10, prev + 1));
     const latencyMs = (distance * 10) / pathologyParams.velocity;
     const vcn = (distance / (latencyMs / 1000)) / 100;
 
     setStats({ vcn, latency: latencyMs });
 
-    // Generate response points
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const width = canvas.width;
-    const newPoints: number[] = [];
-    const sweepSpeed = 50; // ms
+    if (mode === 'vcn') {
+      // Generate response points for VCN mode
+      const width = canvas.width;
+      const newPoints: number[] = [];
+      const sweepSpeed = 50; // ms
 
-    for (let i = 0; i < width; i++) {
-      const t = (i / width) * sweepSpeed;
-      let val = 0;
-      // Stimulus Artifact
-      if (t > 0.5 && t < 1.5) val += (Math.random() - 0.5) * 60;
-      // CMAP Response
-      if (t >= latencyMs && t < latencyMs + 20) {
-        const localT = (t - latencyMs) - 5;
-        val += generateMUAP(localT, 90 * pathologyParams.amplitudeMult, pathologyParams.dispersion);
+      for (let i = 0; i < width; i++) {
+        const t = (i / width) * sweepSpeed;
+        let val = 0;
+        if (t > 0.5 && t < 1.5) val += (Math.random() - 0.5) * 60;
+        if (t >= latencyMs && t < latencyMs + 20) {
+          const localT = (t - latencyMs) - 5;
+          val += generateMUAP(localT, 90 * pathologyParams.amplitudeMult, pathologyParams.dispersion);
+        }
+        newPoints.push(val);
       }
-      newPoints.push(val);
+      setPoints(newPoints);
+    } else {
+      // In EMG mode, we just inject a artifact into the buffer (handled in render loop)
+      artifactRef.current = 10; // 10 frames of artifact
     }
-    setPoints(newPoints);
   };
 
   const handleReset = () => {
     setPoints([]);
-    setEmgBuffer([]);
+    emgBufferRef.current = [];
     setStimCount(0);
     setStats({ vcn: 0, latency: 0 });
     frameCountRef.current = 0;
@@ -184,11 +186,7 @@ export default function App() {
         ctx.stroke();
 
         if (mode === 'emg') {
-          // Draw EMG (Interference Pattern)
-          ctx.strokeStyle = '#4ade80';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-
+          // Calculate Signal point
           let signal = 0;
           let emgTime = frameCountRef.current * 0.2;
 
@@ -207,13 +205,28 @@ export default function App() {
 
           signal += (Math.random() - 0.5) * 10;
 
-          setEmgBuffer(prev => {
-            const next = [...prev, signal];
-            if (next.length > width) return next.slice(1);
-            return next;
-          });
+          // Inject artifact if triggered
+          if (artifactRef.current > 0) {
+            signal += (Math.random() - 0.5) * 200;
+            artifactRef.current--;
+          }
 
-          // Reference local copy of buffer to avoid flickering
+          // Add to buffer
+          emgBufferRef.current.push(signal);
+          if (emgBufferRef.current.length > width) {
+            emgBufferRef.current.shift();
+          }
+
+          // Draw the buffer
+          ctx.strokeStyle = '#4ade80';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          emgBufferRef.current.forEach((val, i) => {
+            const y = height / 2 + val;
+            if (i === 0) ctx.moveTo(i, y);
+            else ctx.lineTo(i, y);
+          });
+          ctx.stroke();
         } else if (points.length > 0) {
           // Draw VCN CMAP
           ctx.strokeStyle = '#60a5fa';
@@ -245,26 +258,6 @@ export default function App() {
     animationRef.current = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationRef.current);
   }, [isPaused, mode, points, pathology, pathologyParams.amplitudeMult]);
-
-  // Separate effect for EMG buffer rendering to avoid state-sync issues in the loop
-  useEffect(() => {
-    if (mode !== 'emg' || isPaused) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    // The previous loop handles clearing, we just draw the buffer
-    ctx.strokeStyle = '#4ade80';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    emgBuffer.forEach((val, i) => {
-      const y = canvas.height / 2 + val;
-      if (i === 0) ctx.moveTo(i, y);
-      else ctx.lineTo(i, y);
-    });
-    ctx.stroke();
-  }, [emgBuffer, mode, isPaused]);
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 font-sans selection:bg-blue-500/30 p-4 md:p-8">
@@ -371,8 +364,7 @@ export default function App() {
 
                 <button 
                   onClick={handleTrigger}
-                  disabled={mode === 'emg'}
-                  className="w-full bg-red-600 hover:bg-red-500 disabled:opacity-30 disabled:hover:bg-red-600 text-white font-black py-4 rounded-xl shadow-xl shadow-red-900/20 active:scale-95 transition-all text-sm tracking-widest uppercase flex items-center justify-center gap-2"
+                  className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl shadow-xl shadow-red-900/20 active:scale-95 transition-all text-sm tracking-widest uppercase flex items-center justify-center gap-2"
                 >
                   <Zap size={18} fill="white" /> Estimular
                 </button>
