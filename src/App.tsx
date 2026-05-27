@@ -23,7 +23,7 @@ import {
 
 type NerveType = 'median' | 'ulnar' | 'radial' | 'peroneal' | 'tibial' | 'sural';
 type PathologyType = 'normal' | 'desmielinizante' | 'miastenia' | 'lambert' | 'denervacion' | 'fatiga';
-type Mode = 'vcn' | 'emg';
+type Mode = 'vcn' | 'emg' | 'tetanos';
 
 interface PathologyParams {
   velocity: number;
@@ -58,8 +58,17 @@ export default function App() {
   const [stats, setStats] = useState({ vcn: 0, latency: 0 });
   const [points, setPoints] = useState<number[]>([]);
   
+  // Tetanus states
+  const [frequency, setFrequency] = useState(10); // Hz (estimulaciones por segundo)
+  const [isContinuousStim, setIsContinuousStim] = useState(false);
+  
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const emgBufferRef = useRef<number[]>([]);
+  const tetanusBufferRef = useRef<number[]>([]);
+  const calciumRef = useRef(0);
+  const tensionRef = useRef(0);
+  const lastStimTimeRef = useRef(0);
+  const tetanusStimCountRef = useRef(0);
   const frameCountRef = useRef(0);
   const animationRef = useRef<number>(0);
   const artifactRef = useRef(0);
@@ -113,6 +122,30 @@ export default function App() {
     }
   }, [pathology, nerve, stimCount]);
 
+  // Trigger individual tetanus stimulus
+  const triggerSingleTetanusStim = () => {
+    tetanusStimCountRef.current = Math.min(50, tetanusStimCountRef.current + 1);
+    
+    let stimStrength = 18; // base calcium impulse for a standard twitch
+    const count = tetanusStimCountRef.current;
+    
+    // Pathology modulations
+    if (pathology === 'miastenia') {
+      const decrement = Math.max(0.15, 1.0 - count * 0.08);
+      stimStrength *= decrement;
+    } else if (pathology === 'lambert') {
+      const facilitation = Math.min(2.5, 0.4 + count * 0.15);
+      stimStrength *= facilitation;
+    } else if (pathology === 'fatiga') {
+      const decline = Math.max(0.25, 1.0 - count * 0.04);
+      stimStrength *= decline;
+    } else if (pathology === 'desmielinizante') {
+      stimStrength *= 0.7;
+    }
+
+    calciumRef.current += stimStrength;
+  };
+
   // Handle Stimulus
   const handleTrigger = () => {
     setStimCount(prev => Math.min(10, prev + 1));
@@ -141,18 +174,34 @@ export default function App() {
         newPoints.push(val);
       }
       setPoints(newPoints);
-    } else {
+    } else if (mode === 'emg') {
       // In EMG mode, we just inject a artifact into the buffer (handled in render loop)
       artifactRef.current = 10; // 10 frames of artifact
+    } else if (mode === 'tetanos') {
+      // In Tetanus mode, we trigger a single twitch
+      triggerSingleTetanusStim();
     }
   };
 
   const handleReset = () => {
     setPoints([]);
     emgBufferRef.current = [];
+    tetanusBufferRef.current = [];
+    calciumRef.current = 0;
+    tensionRef.current = 0;
+    tetanusStimCountRef.current = 0;
+    setIsContinuousStim(false);
     setStimCount(0);
     setStats({ vcn: 0, latency: 0 });
     frameCountRef.current = 0;
+  };
+
+  const toggleContinuousStim = () => {
+    if (!isContinuousStim) {
+      tetanusStimCountRef.current = 0; // reset counter for fresh run
+      lastStimTimeRef.current = performance.now();
+    }
+    setIsContinuousStim(!isContinuousStim);
   };
 
   // Rendering Loop
@@ -184,6 +233,16 @@ export default function App() {
         ctx.moveTo(0, height / 2);
         ctx.lineTo(width, height / 2);
         ctx.stroke();
+
+        // Repetitive stimulation in Tetanus Mode
+        if (mode === 'tetanos' && isContinuousStim) {
+          const now = performance.now();
+          const intervalMs = 1000 / frequency; // interval based on selected Hz rate
+          if (now - lastStimTimeRef.current >= intervalMs) {
+            triggerSingleTetanusStim();
+            lastStimTimeRef.current = now;
+          }
+        }
 
         if (mode === 'emg') {
           // Calculate Signal point
@@ -227,6 +286,71 @@ export default function App() {
             else ctx.lineTo(i, y);
           });
           ctx.stroke();
+        } else if (mode === 'tetanos') {
+          // Calculate Tetanus simulation physics
+          const isCompleteTetanus = frequency >= 32 && isContinuousStim;
+
+          if (isCompleteTetanus) {
+            // Under complete tetanus, we simulate direct fused calcium saturation
+            // This prevents discrete stimulation pulses from inducing high-frequency step ripples
+            const count = tetanusStimCountRef.current;
+            let pathologyFactor = 1.0;
+            if (pathology === 'miastenia') {
+              pathologyFactor = Math.max(0.15, 1.0 - count * 0.08);
+            } else if (pathology === 'lambert') {
+              pathologyFactor = Math.min(2.5, 0.4 + count * 0.15);
+            } else if (pathology === 'fatiga') {
+              pathologyFactor = Math.max(0.25, 1.0 - count * 0.04);
+            } else if (pathology === 'desmielinizante') {
+              pathologyFactor = 0.7;
+            }
+
+            const targetCalcium = 120 * pathologyFactor;
+            // Rise smoothly simulating complete biological fusion
+            calciumRef.current = calciumRef.current + (targetCalcium - calciumRef.current) * 0.15;
+          } else {
+            // Standard decay for incomplete tetanus and isolated twitches
+            const calciumDecay = 0.88;
+            calciumRef.current = calciumRef.current * calciumDecay;
+          }
+
+          const tensionSpeed = isCompleteTetanus ? 0.08 : 0.12;
+          const targetTension = calciumRef.current;
+          // Tension crawls toward calcium (twitch build-up)
+          tensionRef.current = tensionRef.current + (targetTension - tensionRef.current) * tensionSpeed;
+
+          // Cap tension to prevent values from overflowing the screen heights
+          if (tensionRef.current > 120) {
+            tensionRef.current = 120;
+          }
+
+          const currentTension = tensionRef.current;
+          let tensionTremor = 0;
+          if (currentTension > 3 && !isCompleteTetanus) {
+            // Tremor is proportional to current contraction target, larger at higher force
+            // Completely disabled for complete tetanus to show NO oscillations or micro-relaxations
+            tensionTremor = (Math.random() - 0.5) * (currentTension * 0.04 + 0.8);
+          }
+
+          // Tetanus tension draws upwards starting from the baseline
+          const signal = -currentTension * 1.5 + tensionTremor;
+
+          // Add to Tetanus buffer
+          tetanusBufferRef.current.push(signal);
+          if (tetanusBufferRef.current.length > width) {
+            tetanusBufferRef.current.shift();
+          }
+
+          // Draw the buffer
+          ctx.strokeStyle = '#c084fc'; // Beautiful purple for Tetanus
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          tetanusBufferRef.current.forEach((val, i) => {
+            const y = height / 2 + val;
+            if (i === 0) ctx.moveTo(i, y);
+            else ctx.lineTo(i, y);
+          });
+          ctx.stroke();
         } else if (points.length > 0) {
           // Draw VCN CMAP
           ctx.strokeStyle = '#60a5fa';
@@ -257,7 +381,7 @@ export default function App() {
 
     animationRef.current = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [isPaused, mode, points, pathology, pathologyParams.amplitudeMult]);
+  }, [isPaused, mode, points, pathology, pathologyParams.amplitudeMult, isContinuousStim, frequency]);
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 font-sans selection:bg-blue-500/30 p-4 md:p-8">
@@ -277,17 +401,17 @@ export default function App() {
 
           <div className="flex gap-4 mt-6 md:mt-0">
             <MetricCard 
-              label="VCN Calculada" 
-              value={`${stats.vcn.toFixed(1)} m/s`} 
+              label={mode === 'tetanos' ? "Frecuencia" : "VCN Calculada"} 
+              value={mode === 'tetanos' ? `${frequency} Hz` : `${stats.vcn.toFixed(1)} m/s`} 
               unit="" 
-              color="text-emerald-400" 
+              color={mode === 'tetanos' ? "text-purple-400" : "text-emerald-400"} 
               icon={<Zap size={16} />}
             />
             <MetricCard 
-              label="Latencia Distal" 
-              value={`${stats.latency.toFixed(2)} ms`} 
+              label={mode === 'tetanos' ? "Tensión Muscular" : "Latencia Distal"} 
+              value={mode === 'tetanos' ? `${Math.round(tensionRef.current * 0.83)}%` : `${stats.latency.toFixed(2)} ms`} 
               unit="" 
-              color="text-amber-400" 
+              color={mode === 'tetanos' ? "text-fuchsia-400" : "text-amber-400"} 
               icon={<Activity size={16} />}
             />
           </div>
@@ -344,32 +468,77 @@ export default function App() {
                     className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                   />
                 </div>
+
+                <AnimatePresence>
+                  {mode === 'tetanos' && (
+                    <motion.div 
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-3 pt-3 border-t border-slate-700/30 overflow-hidden"
+                    >
+                      <div className="flex justify-between text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                        <span>Frecuencia Estímulos</span>
+                        <span className="text-purple-400 font-bold">{frequency} Hz (estim/s)</span>
+                      </div>
+                      <input 
+                        type="range" min="1" max="60" value={frequency}
+                        onChange={(e) => setFrequency(parseInt(e.target.value))}
+                        className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500 animate-pulse"
+                      />
+                      <div className="flex justify-between text-[9px] text-slate-500">
+                        <span>1 Hz (Twitch)</span>
+                        <span className="text-purple-300">10 Hz (Incompleto)</span>
+                        <span>&gt;32 Hz (Completo)</span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
-              <div className="pt-4 space-y-3">
-                <div className="grid grid-cols-2 gap-2">
+              <div className="pt-4 space-y-4">
+                <div className="grid grid-cols-3 gap-1.5">
                   <button 
                     onClick={() => { setMode('vcn'); handleReset(); }}
-                    className={`text-[10px] font-bold uppercase p-2 rounded-lg border transition ${mode === 'vcn' ? 'bg-blue-600 border-blue-400 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-900 border-slate-700 text-slate-500 opacity-60'}`}
+                    className={`text-[9.5px] font-bold uppercase py-2.5 px-0.5 rounded-lg border transition ${mode === 'vcn' ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : 'bg-slate-900 border-slate-850 text-slate-500 opacity-70'}`}
                   >
-                    Potencial CMAP
+                    CMAP
                   </button>
                   <button 
                     onClick={() => { setMode('emg'); handleReset(); }}
-                    className={`text-[10px] font-bold uppercase p-2 rounded-lg border transition ${mode === 'emg' ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-900 border-slate-700 text-slate-500 opacity-60'}`}
+                    className={`text-[9.5px] font-bold uppercase py-2.5 px-0.5 rounded-lg border transition ${mode === 'emg' ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg' : 'bg-slate-900 border-slate-850 text-slate-500 opacity-70'}`}
                   >
-                    EMG Esfuerzo
+                    EMG
+                  </button>
+                  <button 
+                    onClick={() => { setMode('tetanos'); handleReset(); }}
+                    className={`text-[9.5px] font-bold uppercase py-2.5 px-0.5 rounded-lg border transition ${mode === 'tetanos' ? 'bg-purple-600 border-purple-400 text-white shadow-lg' : 'bg-slate-900 border-slate-850 text-slate-500 opacity-70'}`}
+                  >
+                    Tétanos
                   </button>
                 </div>
 
-                <button 
-                  onClick={handleTrigger}
-                  className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl shadow-xl shadow-red-900/20 active:scale-95 transition-all text-sm tracking-widest uppercase flex items-center justify-center gap-2"
-                >
-                  <Zap size={18} fill="white" /> Estimular
-                </button>
-
                 <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    onClick={handleTrigger}
+                    className="bg-red-600 hover:bg-red-500 active:scale-95 text-white font-black py-4 rounded-xl shadow-xl shadow-red-900/20 transition-all text-[11px] tracking-wider uppercase flex items-center justify-center gap-1.5"
+                  >
+                    <Zap size={14} fill="currentColor" /> Estimular
+                  </button>
+                  <button 
+                    onClick={toggleContinuousStim}
+                    disabled={mode !== 'tetanos'}
+                    className={`font-black py-4 rounded-xl transition-all text-[11px] tracking-wider uppercase flex items-center justify-center gap-1.5 ${
+                      isContinuousStim 
+                        ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-xl shadow-purple-950/40 animate-pulse' 
+                        : 'bg-slate-750 border border-slate-650 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:pointer-events-none'
+                    }`}
+                  >
+                    <Activity size={14} /> Repetitivo
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-700/30">
                   <button 
                     onClick={() => setIsPaused(!isPaused)}
                     className="bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl text-[10px] uppercase tracking-widest transition flex items-center justify-center gap-2"
@@ -420,14 +589,18 @@ export default function App() {
                 {/* Labels/Telemetry Inside Canvas Overlay */}
                 <div className="absolute top-4 left-4 z-20 space-y-1 bg-black/40 backdrop-blur-sm p-3 rounded-lg border border-slate-800/50">
                   <div className="text-[10px] font-mono font-bold text-emerald-500 flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> SENS: 5 mV/div
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> {mode === 'tetanos' ? 'SENS: 10 N/div' : 'SENS: 5 mV/div'}
                   </div>
-                  <div className="text-[10px] font-mono font-bold text-slate-500">SWEEP: 5 ms/div</div>
+                  <div className="text-[10px] font-mono font-bold text-slate-500">{mode === 'tetanos' ? 'SWEEP: REG. CONT.' : 'SWEEP: 5 ms/div'}</div>
                 </div>
 
                 <div className="absolute top-4 right-4 z-20 text-right space-y-1 bg-black/40 backdrop-blur-sm p-3 rounded-lg border border-slate-800/50">
-                  <div className="text-[10px] font-mono text-blue-400">Time: {(frameCountRef.current * 0.1).toFixed(1)} ms</div>
-                  <div className="text-[10px] font-mono text-slate-500">Voltage: {(Math.random() * 0.05).toFixed(2)} mV</div>
+                  <div className="text-[10px] font-mono text-blue-400">
+                    {mode === 'tetanos' ? `Frecuencia: ${frequency} Hz` : `Time: ${(frameCountRef.current * 0.1).toFixed(1)} ms`}
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-500">
+                    {mode === 'tetanos' ? `Tensión: ${Math.round(tensionRef.current * 0.83)}%` : `Voltage: ${(Math.random() * 0.05).toFixed(2)} mV`}
+                  </div>
                 </div>
 
                 <canvas 
@@ -451,6 +624,30 @@ export default function App() {
                       </span>
                     </motion.div>
                   )}
+
+                  {mode === 'tetanos' && (
+                    <motion.div 
+                      key="tetanos-badge"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="absolute bottom-4 left-4 right-4 text-center"
+                    >
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-full shadow-lg transition-all ${
+                        frequency >= 32 
+                          ? 'bg-red-600 border border-red-400 text-white glow-red' 
+                          : frequency >= 5 
+                            ? 'bg-amber-600 border border-amber-400 text-white' 
+                            : 'bg-purple-600 border border-purple-450 text-white'
+                      }`}>
+                        {frequency >= 32 
+                          ? 'Tétano Completo (Fusión Absoluta)' 
+                          : frequency >= 5 
+                            ? 'Tétano Incompleto (Sumación Temporal)' 
+                            : 'Sacudidas Simples (Aisladas)'}
+                      </span>
+                    </motion.div>
+                  )}
                 </AnimatePresence>
               </div>
             </div>
@@ -463,13 +660,26 @@ export default function App() {
               <div className="bg-indigo-500/10 p-3 rounded-xl">
                 <Info className="text-indigo-400" size={24} />
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2 flex-1">
                 <h3 className="text-sm font-black text-slate-300 uppercase tracking-widest flex items-center gap-2">
                   Interpretación Clínica
                   <span className={`w-2 h-2 rounded-full ${pathology === 'normal' ? 'bg-emerald-500' : 'bg-red-500'}`}></span>
                 </h3>
                 <p className="text-sm text-slate-400 leading-relaxed italic">
-                  {pathologyParams.info}
+                  {mode === 'tetanos' 
+                    ? `Frecuencia seleccionada: ${frequency} Hz. ` + 
+                      (frequency >= 32 
+                        ? 'En el TÉtano Completo (FusióN), los estímulos repetitivos son tan rápidos que el músculo no tiene tiempo para relajarse en lo absoluto. El calcio intracelular permanece constantemente elevado y los twitches individuales se fusionan en una contracción máxima y perfectamente sostenida (meseta).' 
+                        : frequency >= 5 
+                          ? 'En el TéTano Incompleto, los estímulos repetitivos se aplican con suficiente frecuencia para sumarse, pero con suficiente intervalo para permitir que el músculo se relaje parcialmente. Esto genera una fuerza de contracción oscilante y un patrón de ondas sumatorias.' 
+                          : 'A frecuencias extremadamente bajas (1-4 Hz), se observan sacudidas musculares aisladas prácticamente completas antes de que llegue la siguiente estimulación, sin sumación significativa.') +
+                      (pathology === 'miastenia' 
+                        ? ' [Condición de Miastenia]: Al iniciar estímulos continuos, se aprecia un patrón decrementante por el rápido agotamiento de la acetilcolina disponible en los receptores.' 
+                        : pathology === 'lambert' 
+                          ? ' [Condición de Lambert-Eaton]: La estimulación repetida aumenta el influjo de calcio intracelular resolviendo parcialmente el bloqueo presináptico y produciendo una facilitación notable (aumento progresivo).' 
+                          : '')
+                    : pathologyParams.info
+                  }
                 </p>
               </div>
             </motion.div>

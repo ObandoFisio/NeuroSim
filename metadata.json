@@ -2,5 +2,7 @@
   "name": "NeuroSim v1.0",
   "description": "Neurophysiology simulator for EMG and Nerve Conduction Velocity (VCN) analysis with clinical pathology modeling.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
