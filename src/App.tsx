@@ -61,6 +61,7 @@ export default function App() {
   // Tetanus states
   const [frequency, setFrequency] = useState(10); // Hz (estimulaciones por segundo)
   const [isContinuousStim, setIsContinuousStim] = useState(false);
+  const [voluntaryEffort, setVoluntaryEffort] = useState(0); // Esfuerzo voluntario %
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const emgBufferRef = useRef<number[]>([]);
@@ -191,6 +192,7 @@ export default function App() {
     tensionRef.current = 0;
     tetanusStimCountRef.current = 0;
     setIsContinuousStim(false);
+    setVoluntaryEffort(0);
     setStimCount(0);
     setStats({ vcn: 0, latency: 0 });
     frameCountRef.current = 0;
@@ -247,24 +249,45 @@ export default function App() {
         if (mode === 'emg') {
           // Calculate Signal point
           let signal = 0;
-          let emgTime = frameCountRef.current * 0.2;
+          const activeUnitsCount = Math.ceil((voluntaryEffort / 100) * 8);
 
-          for (let i = 0; i < 8; i++) {
-            const freq = (15 + i * 8) * (pathology === 'fatiga' ? 0.6 : 1);
-            const amp = (15 + Math.random() * 5) * pathologyParams.amplitudeMult;
-            signal += Math.sin(emgTime * (freq / 10)) * amp;
+          if (activeUnitsCount > 0) {
+            const emgTime = frameCountRef.current * 0.25;
+            for (let i = 0; i < activeUnitsCount; i++) {
+              const freq = (22 + i * 14) * (pathology === 'fatiga' ? 0.65 : 1.0);
+              // Henneman size principle: larger motor units are recruited with greater effort and have higher amplitude
+              const unitBaseAmp = (8 + i * 7) * pathologyParams.amplitudeMult;
+              const effortScaling = (voluntaryEffort / 100);
+              
+              // Superpose individual motor unit action potentials (MUAP) with high frequency variation
+              signal += Math.sin(emgTime * (freq / 10) + i) * unitBaseAmp * effortScaling;
+            }
+
+            if (pathology === 'denervacion') {
+              if (Math.random() > 0.92) signal += (Math.random() - 0.5) * 160;
+            } else if (pathology === 'miastenia') {
+              const fade = Math.max(0.12, 1 - (frameCountRef.current % 800) / 800);
+              signal *= fade;
+            }
+
+            // Electrode background thermal noise
+            signal += (Math.random() - 0.5) * 6;
+          } else {
+            // Muscle at sleep/rest (Isoelectric Line)
+            if (pathology === 'denervacion') {
+              // Spontaneous denervation activity (fibrillations and positive sharp waves)
+              if (Math.random() > 0.95) {
+                signal += (Math.random() - 0.5) * 110;
+              } else {
+                signal += (Math.random() - 0.5) * 1.5;
+              }
+            } else {
+              // Perfectly linear isoelectric line with minimal instrument noise
+              signal = (Math.random() - 0.5) * 1.2;
+            }
           }
 
-          if (pathology === 'denervacion') {
-            if (Math.random() > 0.94) signal += (Math.random() - 0.5) * 180;
-          } else if (pathology === 'miastenia') {
-            const fade = Math.max(0.1, 1 - (frameCountRef.current % 1000) / 1000);
-            signal *= fade;
-          }
-
-          signal += (Math.random() - 0.5) * 10;
-
-          // Inject artifact if triggered
+          // Inject artifact if stimulated explicitly
           if (artifactRef.current > 0) {
             signal += (Math.random() - 0.5) * 200;
             artifactRef.current--;
@@ -381,7 +404,7 @@ export default function App() {
 
     animationRef.current = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [isPaused, mode, points, pathology, pathologyParams.amplitudeMult, isContinuousStim, frequency]);
+  }, [isPaused, mode, points, pathology, pathologyParams.amplitudeMult, isContinuousStim, frequency, voluntaryEffort]);
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 font-sans selection:bg-blue-500/30 p-4 md:p-8">
@@ -389,29 +412,46 @@ export default function App() {
         
         {/* Header Section */}
         <header className="flex flex-col md:flex-row justify-between items-center bg-slate-800/80 backdrop-blur-md p-6 rounded-2xl border border-slate-700 shadow-2xl">
-          <div className="space-y-1 text-center md:text-left">
-            <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent flex items-center gap-3">
-              <Brain className="text-blue-400" size={32} />
-              NeuroSim <span className="text-xl font-medium text-slate-500 tracking-widest">v1.0</span>
-            </h1>
-            <p className="text-xs uppercase tracking-[0.2em] font-semibold text-slate-400 flex items-center justify-center md:justify-start gap-2">
-              <Stethoscope size={14} /> Simulador Neurofisiológico Avanzado
-            </p>
+          <div className="space-y-2 text-center md:text-left w-full md:w-auto">
+            <div className="flex flex-col sm:flex-row items-center gap-4">
+              <h1 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent flex items-center gap-3">
+                <Brain className="text-blue-400" size={32} />
+                NeuroSim <span className="text-xl font-medium text-slate-500 tracking-widest">v1.0</span>
+              </h1>
+              <a 
+                href="https://www.youtube.com/@ProfeX-27" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="bg-red-600 hover:bg-red-500 active:scale-95 text-white text-xs font-bold px-4 py-1.5 rounded-full shadow-lg hover:shadow-red-900/50 flex items-center gap-1.5 transition-all w-fit"
+                id="youtube-subscribe"
+              >
+                <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                Suscríbete
+              </a>
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-xs uppercase tracking-[0.2em] font-semibold text-slate-400 flex items-center justify-center md:justify-start gap-2">
+                <Stethoscope size={14} /> Simulador Neurofisiológico Avanzado
+              </p>
+              <p className="text-[11px] font-medium text-emerald-400 tracking-wider flex items-center justify-center md:justify-start gap-1">
+                Creado por Xavier Obando
+              </p>
+            </div>
           </div>
 
           <div className="flex gap-4 mt-6 md:mt-0">
             <MetricCard 
-              label={mode === 'tetanos' ? "Frecuencia" : "VCN Calculada"} 
-              value={mode === 'tetanos' ? `${frequency} Hz` : `${stats.vcn.toFixed(1)} m/s`} 
+              label={mode === 'tetanos' ? "Frecuencia" : mode === 'emg' ? "Esfuerzo Voluntario" : "VCN Calculada"} 
+              value={mode === 'tetanos' ? `${frequency} Hz` : mode === 'emg' ? `${voluntaryEffort}%` : `${stats.vcn.toFixed(1)} m/s`} 
               unit="" 
-              color={mode === 'tetanos' ? "text-purple-400" : "text-emerald-400"} 
+              color={mode === 'tetanos' ? "text-purple-400" : mode === 'emg' ? "text-emerald-400" : "text-emerald-400"} 
               icon={<Zap size={16} />}
             />
             <MetricCard 
-              label={mode === 'tetanos' ? "Tensión Muscular" : "Latencia Distal"} 
-              value={mode === 'tetanos' ? `${Math.round(tensionRef.current * 0.83)}%` : `${stats.latency.toFixed(2)} ms`} 
+              label={mode === 'tetanos' ? "Tensión Muscular" : mode === 'emg' ? "U. Motoras Activas" : "Latencia Distal"} 
+              value={mode === 'tetanos' ? `${Math.round(tensionRef.current * 0.83)}%` : mode === 'emg' ? `${Math.ceil((voluntaryEffort / 100) * 8)} / 8` : `${stats.latency.toFixed(2)} ms`} 
               unit="" 
-              color={mode === 'tetanos' ? "text-fuchsia-400" : "text-amber-400"} 
+              color={mode === 'tetanos' ? "text-fuchsia-400" : mode === 'emg' ? "text-teal-400" : "text-amber-400"} 
               icon={<Activity size={16} />}
             />
           </div>
@@ -469,9 +509,10 @@ export default function App() {
                   />
                 </div>
 
-                <AnimatePresence>
+                <AnimatePresence mode="popLayout">
                   {mode === 'tetanos' && (
                     <motion.div 
+                      key="tetanos-controls"
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
                       exit={{ opacity: 0, height: 0 }}
@@ -490,6 +531,32 @@ export default function App() {
                         <span>1 Hz (Twitch)</span>
                         <span className="text-purple-300">10 Hz (Incompleto)</span>
                         <span>&gt;32 Hz (Completo)</span>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {mode === 'emg' && (
+                    <motion.div 
+                      key="emg-controls"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-3 pt-3 border-t border-slate-700/30 overflow-hidden"
+                    >
+                      <div className="flex justify-between text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+                        <span>Esfuerzo Voluntario</span>
+                        <span className="text-emerald-400 font-bold">{voluntaryEffort}%</span>
+                      </div>
+                      <input 
+                        type="range" min="0" max="100" value={voluntaryEffort}
+                        onChange={(e) => setVoluntaryEffort(parseInt(e.target.value))}
+                        className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                        id="emg-effort-slider"
+                      />
+                      <div className="flex justify-between text-[9px] text-slate-500">
+                        <span>0% (Reposo)</span>
+                        <span className="text-teal-300">35-70% (Parcial)</span>
+                        <span>100% (Máximo)</span>
                       </div>
                     </motion.div>
                   )}
@@ -589,17 +656,25 @@ export default function App() {
                 {/* Labels/Telemetry Inside Canvas Overlay */}
                 <div className="absolute top-4 left-4 z-20 space-y-1 bg-black/40 backdrop-blur-sm p-3 rounded-lg border border-slate-800/50">
                   <div className="text-[10px] font-mono font-bold text-emerald-500 flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> {mode === 'tetanos' ? 'SENS: 10 N/div' : 'SENS: 5 mV/div'}
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> {mode === 'tetanos' ? 'SENS: 10 N/div' : mode === 'emg' ? 'SENS: 2 mV/div' : 'SENS: 5 mV/div'}
                   </div>
-                  <div className="text-[10px] font-mono font-bold text-slate-500">{mode === 'tetanos' ? 'SWEEP: REG. CONT.' : 'SWEEP: 5 ms/div'}</div>
+                  <div className="text-[10px] font-mono font-bold text-slate-500">{mode === 'tetanos' || mode === 'emg' ? 'SWEEP: REG. CONT.' : 'SWEEP: 5 ms/div'}</div>
                 </div>
 
                 <div className="absolute top-4 right-4 z-20 text-right space-y-1 bg-black/40 backdrop-blur-sm p-3 rounded-lg border border-slate-800/50">
                   <div className="text-[10px] font-mono text-blue-400">
-                    {mode === 'tetanos' ? `Frecuencia: ${frequency} Hz` : `Time: ${(frameCountRef.current * 0.1).toFixed(1)} ms`}
+                    {mode === 'tetanos' 
+                      ? `Frecuencia: ${frequency} Hz` 
+                      : mode === 'emg' 
+                        ? `Esfuerzo: ${voluntaryEffort}%` 
+                        : `Time: ${(frameCountRef.current * 0.1).toFixed(1)} ms`}
                   </div>
                   <div className="text-[10px] font-mono text-slate-500">
-                    {mode === 'tetanos' ? `Tensión: ${Math.round(tensionRef.current * 0.83)}%` : `Voltage: ${(Math.random() * 0.05).toFixed(2)} mV`}
+                    {mode === 'tetanos' 
+                      ? `Tensión: ${Math.round(tensionRef.current * 0.83)}%` 
+                      : mode === 'emg' 
+                        ? `U. Motoras: ${Math.ceil((voluntaryEffort / 100) * 8)}` 
+                        : `Voltage: ${(Math.random() * 0.05).toFixed(2)} mV`}
                   </div>
                 </div>
 
@@ -648,6 +723,34 @@ export default function App() {
                       </span>
                     </motion.div>
                   )}
+
+                  {mode === 'emg' && (
+                    <motion.div 
+                      key="emg-badge"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="absolute bottom-4 left-4 right-4 text-center"
+                    >
+                      <span className={`text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-full shadow-lg transition-all ${
+                        voluntaryEffort === 0
+                          ? 'bg-slate-700/90 border border-slate-650 text-slate-300'
+                          : voluntaryEffort >= 75
+                            ? 'bg-emerald-600 border border-emerald-450 text-white animate-pulse'
+                            : voluntaryEffort >= 35
+                              ? 'bg-teal-600 border border-teal-450 text-white'
+                              : 'bg-blue-600 border border-blue-450 text-white'
+                      }`}>
+                        {voluntaryEffort === 0 
+                          ? 'Músculo en Reposo (Línea Isoeléctrica)' 
+                          : voluntaryEffort >= 75 
+                            ? 'Patrón de Interferencia Completo' 
+                            : voluntaryEffort >= 35 
+                              ? 'Patrón de Oscilación Intermedio' 
+                              : 'Reclutamiento de Unidades Aisladas'}
+                      </span>
+                    </motion.div>
+                  )}
                 </AnimatePresence>
               </div>
             </div>
@@ -669,16 +772,34 @@ export default function App() {
                   {mode === 'tetanos' 
                     ? `Frecuencia seleccionada: ${frequency} Hz. ` + 
                       (frequency >= 32 
-                        ? 'En el TÉtano Completo (FusióN), los estímulos repetitivos son tan rápidos que el músculo no tiene tiempo para relajarse en lo absoluto. El calcio intracelular permanece constantemente elevado y los twitches individuales se fusionan en una contracción máxima y perfectamente sostenida (meseta).' 
+                        ? 'En el Tétano Completo (Fusión), los estímulos repetitivos son tan rápidos que el músculo no tiene tiempo para relajarse en lo absoluto. El calcio intracelular permanece constantemente elevado y los twitches individuales se fusionan en una contracción máxima y perfectamente sostenida (meseta).' 
                         : frequency >= 5 
-                          ? 'En el TéTano Incompleto, los estímulos repetitivos se aplican con suficiente frecuencia para sumarse, pero con suficiente intervalo para permitir que el músculo se relaje parcialmente. Esto genera una fuerza de contracción oscilante y un patrón de ondas sumatorias.' 
+                          ? 'En el Tétano Incompleto, los estímulos repetitivos se aplican con suficiente frecuencia para sumarse, pero con suficiente intervalo para permitir que el músculo se relaje parcialmente. Esto genera una fuerza de contracción oscilante y un patrón de ondas sumatorias.' 
                           : 'A frecuencias extremadamente bajas (1-4 Hz), se observan sacudidas musculares aisladas prácticamente completas antes de que llegue la siguiente estimulación, sin sumación significativa.') +
                       (pathology === 'miastenia' 
                         ? ' [Condición de Miastenia]: Al iniciar estímulos continuos, se aprecia un patrón decrementante por el rápido agotamiento de la acetilcolina disponible en los receptores.' 
                         : pathology === 'lambert' 
                           ? ' [Condición de Lambert-Eaton]: La estimulación repetida aumenta el influjo de calcio intracelular resolviendo parcialmente el bloqueo presináptico y produciendo una facilitación notable (aumento progresivo).' 
                           : '')
-                    : pathologyParams.info
+                    : mode === 'emg'
+                      ? `Esfuerzo voluntario: ${voluntaryEffort}%. ` +
+                        (voluntaryEffort === 0
+                          ? 'Músculo en completo reposo. Se registra una línea isoeléctrica calibrada (salvo potenciales espontáneos patológicos en caso de denervación o mínimos ruidos bioeléctricos de electrodo).'
+                          : `Se observan ${Math.ceil((voluntaryEffort / 100) * 8)} unidad(es) motora(s) reclutada(s). ` +
+                            (voluntaryEffort >= 75
+                              ? 'Patrón de interferencia completo: los potenciales de acción de las unidades motoras se superponen tanto por el esfuerzo que es imposible distinguir la línea basal.'
+                              : voluntaryEffort >= 35
+                                ? 'Patrón transicional o intermedio: aumento en la frecuencia de disparo y número de unidades activas con basal aún parcialmente visible.'
+                                : 'Patrón de oscilación simple: activación de las primeras unidades de menor tamaño acatando el principio de tamaño de Henneman.')
+                        ) +
+                        (pathology === 'denervacion'
+                          ? ' [Condición de Denervación]: Destaca la presencia de fibrilaciones y ondas agudas espontáneas durante el reposo absoluto debido a la hipersensibilidad del sarcolema denervado.'
+                          : pathology === 'miastenia'
+                            ? ' [Condición de Miastenia]: Al sostener el esfuerzo voluntario, se observa un agotamiento transitorio del patrón de interferencia debido a la fatiga sináptica por bloqueo de receptores de ACh.'
+                            : pathology === 'fatiga'
+                              ? ' [Condición de Fatiga Crónica]: Incapacidad para reclutar o sostener un patrón de interferencia completo a pesar del esfuerzo del paciente por agotamiento de la neurotransmisión o metabolitos.'
+                              : '')
+                      : pathologyParams.info
                   }
                 </p>
               </div>
